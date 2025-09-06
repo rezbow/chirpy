@@ -23,3 +23,33 @@ func UserDatabaseToUser(dbUser database.User) User {
 		UpdatedAt: dbUser.UpdatedAt,
 	}
 }
+
+// --------------------------------------------------------
+
+type Chirp struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func ChirpDatabaseToChirp(dbChirp database.Chirp) Chirp {
+	return Chirp{
+		ID:        dbChirp.ID.String(),
+		UserID:    dbChirp.UserID.String(),
+		Body:      dbChirp.Body,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.UpdatedAt,
+	}
+}
+
+func ChirpsDatabaseToChirps(dbChirps []database.Chirp) []Chirp {
+	chirps := make([]Chirp, len(dbChirps))
+	for i, dbChirp := range dbChirps {
+		chirps[i] = ChirpDatabaseToChirp(dbChirp)
+	}
+	return chirps
+}
+
+// --------------------------------------------------------

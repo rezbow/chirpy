@@ -1,0 +1,11 @@
+-- +goose Up
+CREATE TABLE chirps (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    body TEXT NOT NULL,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- +goose Down
+DROP TABLE IF EXISTS chirps;

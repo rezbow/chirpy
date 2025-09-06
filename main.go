@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,9 +11,12 @@ import (
 	"regexp"
 	"strings"
 	"sync/atomic"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/rezbow/chirpy/internal/auth"
 	"github.com/rezbow/chirpy/internal/database"
 )
 
@@ -20,6 +24,7 @@ type ApiConfig struct {
 	fileServerHits atomic.Int64
 	db             *database.Queries
 	platform       string
+	jwtSecret      string
 }
 
 func (api *ApiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -62,21 +67,41 @@ func (api *ApiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (api *ApiConfig) validateChirpHandler(w http.ResponseWriter, r *http.Request) {
+func (api *ApiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
 	var parameters struct {
-		Body string `json:"body"`
+		UserId string `json:"user_id"`
+		Body   string `json:"body"`
 	}
 	err := json.NewDecoder(r.Body).Decode(&parameters)
 	if err != nil {
 		sendError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if parameters.Body == "" {
+		sendError(w, "Chirp is empty", http.StatusBadRequest)
+		return
+	}
 	if len(parameters.Body) > 140 {
 		sendError(w, "Chirp is too long", http.StatusBadRequest)
 		return
 	}
+
+	userId, err := uuid.Parse(parameters.UserId)
+	if err != nil {
+		sendError(w, "invalid user id", http.StatusBadRequest)
+		return
+	}
 	cleanedChirp := cleanChirp(parameters.Body)
-	sendJson(w, map[string]any{"cleaned_body": cleanedChirp}, http.StatusOK)
+
+	chirp, err := api.db.CreateChirp(r.Context(), database.CreateChirpParams{
+		UserID: userId,
+		Body:   cleanedChirp,
+	})
+	if err != nil {
+		sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sendJson(w, ChirpDatabaseToChirp(chirp), http.StatusOK)
 }
 
 func cleanChirp(chirp string) string {
@@ -123,10 +148,19 @@ func isValidEmail(email string) bool {
 
 func (api *ApiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
 	var parameters struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&parameters); err != nil {
 		sendError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if parameters.Email == "" {
+		sendError(w, "Email is required", http.StatusBadRequest)
+		return
+	}
+	if parameters.Password == "" {
+		sendError(w, "Password is required", http.StatusBadRequest)
 		return
 	}
 	// validate email format
@@ -134,12 +168,101 @@ func (api *ApiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 		sendError(w, "Invalid email format", http.StatusBadRequest)
 		return
 	}
-	user, err := api.db.CreateUser(r.Context(), parameters.Email)
+	// check password strength
+	if len(parameters.Password) < 8 {
+		sendError(w, "Password must be at least 8 characters long", http.StatusBadRequest)
+		return
+	}
+
+	user, err := api.db.CreateUser(r.Context(), database.CreateUserParams{
+		Email:        parameters.Email,
+		PasswordHash: auth.HashPassword(parameters.Password),
+	})
 	if err != nil {
 		sendError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	sendJson(w, UserDatabaseToUser(user), http.StatusCreated)
+}
+
+func (api *ApiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
+	chirps, err := api.db.GetChirps(r.Context())
+	if err != nil {
+		sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sendJson(w, ChirpsDatabaseToChirps(chirps), http.StatusOK)
+}
+
+func (api *ApiConfig) getChirpHandler(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	userId, err := uuid.Parse(id)
+	if err != nil {
+		sendError(w, "User Not Found", http.StatusNotFound)
+		return
+	}
+	chirp, err := api.db.GetChirp(r.Context(), userId)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendError(w, "Chirp Not Found", http.StatusNotFound)
+			return
+		}
+		sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sendJson(w, ChirpDatabaseToChirp(chirp), http.StatusOK)
+}
+
+func (api *ApiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
+	var parameters struct {
+		Email            string `json:"email"`
+		Password         string `json:"password"`
+		ExpiresInSeconds int    `json:"expires_in_seconds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&parameters); err != nil {
+		sendError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if parameters.Email == "" || parameters.Password == "" {
+		sendError(w, "Email and Password are required", http.StatusBadRequest)
+		return
+	}
+
+	user, err := api.db.GetUserByEmail(r.Context(), parameters.Email)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendError(w, "Incorrect email or password", http.StatusUnauthorized)
+			return
+		}
+		sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := auth.ComparePassword(user.PasswordHash, parameters.Password); err != nil {
+		sendError(w, "Incorrect email or password", http.StatusUnauthorized)
+		return
+	}
+
+	var expiresIn time.Duration
+	if parameters.ExpiresInSeconds != 0 && time.Duration(parameters.ExpiresInSeconds) < time.Hour {
+		expiresIn = time.Second * time.Duration(parameters.ExpiresInSeconds)
+	} else {
+		expiresIn = time.Hour
+	}
+
+	tokenString, err := auth.MakeJWT(user.ID, api.jwtSecret, expiresIn)
+	if err != nil {
+		sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var response struct {
+		User
+		Token string `json:"token"`
+	}
+	response.User = UserDatabaseToUser(user)
+	response.Token = tokenString
+	sendJson(w, response, http.StatusOK)
 }
 
 func main() {
@@ -163,10 +286,16 @@ func main() {
 		log.Fatal("PLATFORM environment variable is not set")
 	}
 
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		log.Fatal("JWT_SECRET environment variable is not set")
+	}
+
 	// mux is the router i think
 	api := &ApiConfig{
-		db:       database.New(db),
-		platform: platform,
+		db:        database.New(db),
+		platform:  platform,
+		jwtSecret: jwtSecret,
 	}
 	mux := http.NewServeMux()
 	dir := http.Dir(".")
@@ -179,8 +308,11 @@ func main() {
 
 	// api namespace
 	mux.Handle("GET /api/healthz", api.middlewareMetricsInc(http.HandlerFunc(healthzHandler)))
-	mux.Handle("POST /api/validate_chirp", api.middlewareMetricsInc(http.HandlerFunc(api.validateChirpHandler)))
+	mux.Handle("POST /api/chirps", api.middlewareMetricsInc(http.HandlerFunc(api.createChirpHandler)))
+	mux.Handle("GET /api/chirps", api.middlewareMetricsInc(http.HandlerFunc(api.getChirpsHandler)))
+	mux.Handle("GET /api/chirps/{id}", api.middlewareMetricsInc(http.HandlerFunc(api.getChirpHandler)))
 	mux.Handle("POST /api/users", api.middlewareMetricsInc(http.HandlerFunc(api.createUserHandler)))
+	mux.Handle("POST /api/login", api.middlewareMetricsInc(http.HandlerFunc(api.loginHandler)))
 
 	// admin namespace
 	mux.HandleFunc("GET /admin/metrics", api.metricHandler)
