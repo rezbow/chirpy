@@ -55,3 +55,13 @@ func TestJWT(t *testing.T) {
 		}
 	}
 }
+
+func TestRefreshToken(t *testing.T) {
+	refreshToken, err := NewRefreshToken()
+	if err != nil {
+		t.Fatalf("exptected no error got %v", err)
+	}
+	if len(refreshToken) != 256*2 {
+		t.Fatalf("exptected refresh token with length %d got %d", 256*2, len(refreshToken))
+	}
+}

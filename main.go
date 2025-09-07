@@ -67,10 +67,9 @@ func (api *ApiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (api *ApiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
+func (api *ApiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request, userId uuid.UUID) {
 	var parameters struct {
-		UserId string `json:"user_id"`
-		Body   string `json:"body"`
+		Body string `json:"body"`
 	}
 	err := json.NewDecoder(r.Body).Decode(&parameters)
 	if err != nil {
@@ -86,11 +85,6 @@ func (api *ApiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	userId, err := uuid.Parse(parameters.UserId)
-	if err != nil {
-		sendError(w, "invalid user id", http.StatusBadRequest)
-		return
-	}
 	cleanedChirp := cleanChirp(parameters.Body)
 
 	chirp, err := api.db.CreateChirp(r.Context(), database.CreateChirpParams{
@@ -130,6 +124,10 @@ func sendError(w http.ResponseWriter, err string, status int) {
 }
 
 func sendJson(w http.ResponseWriter, data any, status int) error {
+	if data == nil {
+		w.WriteHeader(status)
+		return nil
+	}
 	response, err := json.Marshal(data)
 	if err != nil {
 		return err
@@ -215,9 +213,8 @@ func (api *ApiConfig) getChirpHandler(w http.ResponseWriter, r *http.Request) {
 
 func (api *ApiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 	var parameters struct {
-		Email            string `json:"email"`
-		Password         string `json:"password"`
-		ExpiresInSeconds int    `json:"expires_in_seconds"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&parameters); err != nil {
 		sendError(w, err.Error(), http.StatusBadRequest)
@@ -243,14 +240,24 @@ func (api *ApiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var expiresIn time.Duration
-	if parameters.ExpiresInSeconds != 0 && time.Duration(parameters.ExpiresInSeconds) < time.Hour {
-		expiresIn = time.Second * time.Duration(parameters.ExpiresInSeconds)
-	} else {
-		expiresIn = time.Hour
+	tokenString, err := auth.MakeJWT(user.ID, api.jwtSecret, time.Hour*1)
+	if err != nil {
+		sendError(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	tokenString, err := auth.MakeJWT(user.ID, api.jwtSecret, expiresIn)
+	refreshTokenString, err := auth.NewRefreshToken()
+	if err != nil {
+		sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// add refresh token to database
+	_, err = api.db.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+		Token:     refreshTokenString,
+		UserID:    user.ID,
+		ExpiresAt: time.Now().Add(time.Hour * 24 * 60).UTC(),
+	})
 	if err != nil {
 		sendError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -258,11 +265,102 @@ func (api *ApiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	var response struct {
 		User
-		Token string `json:"token"`
+		Token        string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
 	}
 	response.User = UserDatabaseToUser(user)
 	response.Token = tokenString
+	response.RefreshToken = refreshTokenString
 	sendJson(w, response, http.StatusOK)
+}
+
+func (api *ApiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request, userId uuid.UUID) {
+	id := r.PathValue("id")
+	chirpId, err := uuid.Parse(id)
+	if err != nil {
+		sendError(w, "Chirp Not Found", http.StatusNotFound)
+		return
+	}
+
+	chirp, err := api.db.GetChirp(r.Context(), chirpId)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendError(w, "Chirp Not Found", http.StatusNotFound)
+			return
+		}
+		sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if chirp.UserID != userId {
+		sendError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	_, err = api.db.DeleteChirp(r.Context(), chirpId)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendError(w, "Chirp Not Found", http.StatusNotFound)
+			return
+		}
+		sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sendJson(w, nil, http.StatusNoContent)
+}
+
+func (api *ApiConfig) refreshHandler(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		sendError(w, "refresh token needed", http.StatusUnauthorized)
+		return
+	}
+	refreshToken, err := api.db.GetRefreshToken(r.Context(), token)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendError(w, "refresh token not found", http.StatusUnauthorized)
+			return
+		}
+		sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// check if refreshtoken is expired
+	if time.Now().UTC().After(refreshToken.ExpiresAt) {
+		sendError(w, "refresh token expired", http.StatusUnauthorized)
+		return
+	}
+	// check if its revoekd
+	if !refreshToken.RevokedAt.Valid {
+		sendError(w, "refresh token is revoked", http.StatusUnauthorized)
+		return
+	}
+
+	jwtToken, err := auth.MakeJWT(refreshToken.UserID, api.jwtSecret, time.Hour*1)
+	if err != nil {
+		sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sendJson(w, map[string]string{"token": jwtToken}, http.StatusOK)
+}
+
+func (api *ApiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		sendError(w, "refresh token needed", http.StatusUnauthorized)
+		return
+	}
+
+	_, err = api.db.RevokeRefreshToken(r.Context(), token)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendError(w, "refresh token not found", http.StatusUnauthorized)
+			return
+		}
+		sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sendJson(w, nil, http.StatusNoContent)
 }
 
 func main() {
@@ -308,11 +406,15 @@ func main() {
 
 	// api namespace
 	mux.Handle("GET /api/healthz", api.middlewareMetricsInc(http.HandlerFunc(healthzHandler)))
-	mux.Handle("POST /api/chirps", api.middlewareMetricsInc(http.HandlerFunc(api.createChirpHandler)))
+	mux.Handle("POST /api/chirps", api.authMiddleware(api.createChirpHandler))
 	mux.Handle("GET /api/chirps", api.middlewareMetricsInc(http.HandlerFunc(api.getChirpsHandler)))
 	mux.Handle("GET /api/chirps/{id}", api.middlewareMetricsInc(http.HandlerFunc(api.getChirpHandler)))
+	mux.Handle("DELETE /api/chirps/{id}", api.authMiddleware(api.deleteChirpHandler))
 	mux.Handle("POST /api/users", api.middlewareMetricsInc(http.HandlerFunc(api.createUserHandler)))
+
 	mux.Handle("POST /api/login", api.middlewareMetricsInc(http.HandlerFunc(api.loginHandler)))
+	mux.Handle("POST /api/refresh", api.middlewareMetricsInc(http.HandlerFunc(api.refreshHandler)))
+	mux.Handle("POST /api/revoke", api.middlewareMetricsInc(http.HandlerFunc(api.revokeHandler)))
 
 	// admin namespace
 	mux.HandleFunc("GET /admin/metrics", api.metricHandler)
@@ -322,7 +424,5 @@ func main() {
 		Addr:    ":8080",
 		Handler: mux,
 	}
-
 	server.ListenAndServe()
-
 }
