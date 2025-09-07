@@ -14,3 +14,11 @@ DELETE FROM users;
 
 -- name: GetUserByEmail :one
 SELECT * FROM users WHERE email = $1;
+
+-- name: UpdateUser :one
+UPDATE users SET
+    email = COALESCE(sqlc.narg('email'), email),
+    password_hash = COALESCE(sqlc.narg('passwordHash'), password_hash)
+WHERE id = $1
+RETURNING *
+;

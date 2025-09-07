@@ -7,6 +7,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/google/uuid"
 )
@@ -67,15 +68,29 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 	return i, err
 }
 
-const getUserFromRefreshToken = `-- name: GetUserFromRefreshToken :one
-SELECT users.id FROM users
-INNER JOIN refresh_tokens on users.id = refresh_tokens.user_id
-WHERE refresh_tokens.token = $1
+const updateUser = `-- name: UpdateUser :one
+UPDATE users SET
+    email = COALESCE($2, email),
+    password_hash = COALESCE($3, password_hash)
+WHERE id = $1
+RETURNING id, email, created_at, updated_at, password_hash
 `
 
-func (q *Queries) GetUserFromRefreshToken(ctx context.Context, token string) (uuid.UUID, error) {
-	row := q.db.QueryRowContext(ctx, getUserFromRefreshToken, token)
-	var id uuid.UUID
-	err := row.Scan(&id)
-	return id, err
+type UpdateUserParams struct {
+	ID           uuid.UUID
+	Email        sql.NullString
+	PasswordHash sql.NullString
+}
+
+func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error) {
+	row := q.db.QueryRowContext(ctx, updateUser, arg.ID, arg.Email, arg.PasswordHash)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PasswordHash,
+	)
+	return i, err
 }

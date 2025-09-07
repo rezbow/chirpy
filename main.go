@@ -363,6 +363,38 @@ func (api *ApiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
 	sendJson(w, nil, http.StatusNoContent)
 }
 
+func (api *ApiConfig) updateUserHandler(w http.ResponseWriter, r *http.Request, userId uuid.UUID) {
+	var parameters struct {
+		Email    *string `json:"email"`
+		Password *string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&parameters); err != nil {
+		sendError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	updateParams := database.UpdateUserParams{
+		ID: userId,
+	}
+	if parameters.Email != nil {
+		updateParams.Email = sql.NullString{String: *parameters.Email, Valid: true}
+	}
+	if parameters.Password != nil {
+		updateParams.PasswordHash = sql.NullString{String: auth.HashPassword(*parameters.Password), Valid: true}
+	}
+
+	user, err := api.db.UpdateUser(r.Context(), updateParams)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendError(w, "user not found", http.StatusNotFound)
+			return
+		}
+		sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sendJson(w, UserDatabaseToUser(user), http.StatusOK)
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -411,6 +443,7 @@ func main() {
 	mux.Handle("GET /api/chirps/{id}", api.middlewareMetricsInc(http.HandlerFunc(api.getChirpHandler)))
 	mux.Handle("DELETE /api/chirps/{id}", api.authMiddleware(api.deleteChirpHandler))
 	mux.Handle("POST /api/users", api.middlewareMetricsInc(http.HandlerFunc(api.createUserHandler)))
+	mux.Handle("PUT /api/users", api.authMiddleware(api.updateUserHandler))
 
 	mux.Handle("POST /api/login", api.middlewareMetricsInc(http.HandlerFunc(api.loginHandler)))
 	mux.Handle("POST /api/refresh", api.middlewareMetricsInc(http.HandlerFunc(api.refreshHandler)))
