@@ -10,7 +10,13 @@ DELETE FROM chirps;
 SELECT * FROM chirps WHERE id = $1;
 
 -- name: GetChirps :many
-SELECT * FROM chirps ORDER BY created_at DESC;
+SELECT * FROM chirps
+ORDER BY created_at DESC
+LIMIT $1
+OFFSET $2;
 
 -- name: DeleteChirp :one
 DELETE FROM chirps WHERE id = $1 RETURNING id;
+
+-- name: TotalChirps :one
+SELECT COUNT(*) FROM chirps;

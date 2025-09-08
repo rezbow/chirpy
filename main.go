@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -25,14 +27,6 @@ type ApiConfig struct {
 	db             *database.Queries
 	platform       string
 	jwtSecret      string
-}
-
-func (api *ApiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		api.fileServerHits.Add(1)
-		next.ServeHTTP(w, r)
-	})
-
 }
 
 func healthzHandler(w http.ResponseWriter, r *http.Request) {
@@ -184,12 +178,47 @@ func (api *ApiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 }
 
 func (api *ApiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
-	chirps, err := api.db.GetChirps(r.Context())
+	// TODO: Implement pagination
+	pageString := r.URL.Query().Get("page")
+	pageSizeString := r.URL.Query().Get("pageSize")
+	page, err := strconv.Atoi(pageString)
+	if err != nil {
+		page = 1
+	}
+	pageSize, err := strconv.Atoi(pageSizeString)
+	if err != nil {
+		pageSize = 10
+	}
+	chirps, err := api.db.GetChirps(r.Context(), database.GetChirpsParams{
+		Limit:  int32(pageSize),
+		Offset: int32((page - 1) * pageSize),
+	})
 	if err != nil {
 		sendError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	sendJson(w, ChirpsDatabaseToChirps(chirps), http.StatusOK)
+
+	totalChirps, err := api.db.TotalChirps(r.Context())
+	if err != nil {
+		sendError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var response struct {
+		Chirps   []Chirp `json:"chirps"`
+		Metadata struct {
+			Total      int `json:"total"`
+			Count      int `json:"count"`
+			Page       int `json:"page"`
+			TotalPages int `json:"total_pages"`
+		} `json:"metadata"`
+	}
+	response.Chirps = ChirpsDatabaseToChirps(chirps)
+	response.Metadata.Count = len(chirps)
+	response.Metadata.Page = page
+	response.Metadata.Total = int(totalChirps)
+	response.Metadata.TotalPages = int(math.Ceil(float64(totalChirps) / float64(pageSize)))
+	sendJson(w, response, http.StatusOK)
 }
 
 func (api *ApiConfig) getChirpHandler(w http.ResponseWriter, r *http.Request) {
@@ -421,7 +450,7 @@ func main() {
 		log.Fatal("JWT_SECRET environment variable is not set")
 	}
 
-	// mux is the router i think
+	// mux is the router
 	api := &ApiConfig{
 		db:        database.New(db),
 		platform:  platform,
@@ -438,13 +467,15 @@ func main() {
 
 	// api namespace
 	mux.Handle("GET /api/healthz", api.middlewareMetricsInc(http.HandlerFunc(healthzHandler)))
+	// chirps
 	mux.Handle("POST /api/chirps", api.authMiddleware(api.createChirpHandler))
 	mux.Handle("GET /api/chirps", api.middlewareMetricsInc(http.HandlerFunc(api.getChirpsHandler)))
 	mux.Handle("GET /api/chirps/{id}", api.middlewareMetricsInc(http.HandlerFunc(api.getChirpHandler)))
 	mux.Handle("DELETE /api/chirps/{id}", api.authMiddleware(api.deleteChirpHandler))
+	// users
 	mux.Handle("POST /api/users", api.middlewareMetricsInc(http.HandlerFunc(api.createUserHandler)))
 	mux.Handle("PUT /api/users", api.authMiddleware(api.updateUserHandler))
-
+	// auth
 	mux.Handle("POST /api/login", api.middlewareMetricsInc(http.HandlerFunc(api.loginHandler)))
 	mux.Handle("POST /api/refresh", api.middlewareMetricsInc(http.HandlerFunc(api.refreshHandler)))
 	mux.Handle("POST /api/revoke", api.middlewareMetricsInc(http.HandlerFunc(api.revokeHandler)))

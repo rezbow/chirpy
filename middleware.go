@@ -9,6 +9,13 @@ import (
 
 type AuthHandler func(http.ResponseWriter, *http.Request, uuid.UUID)
 
+func (api *ApiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		api.fileServerHits.Add(1)
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (api *ApiConfig) authMiddleware(next AuthHandler) http.Handler {
 	return http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
