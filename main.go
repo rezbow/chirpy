@@ -27,6 +27,7 @@ type ApiConfig struct {
 	db             *database.Queries
 	platform       string
 	jwtSecret      string
+	polkaKey       string
 }
 
 func healthzHandler(w http.ResponseWriter, r *http.Request) {
@@ -424,6 +425,54 @@ func (api *ApiConfig) updateUserHandler(w http.ResponseWriter, r *http.Request, 
 	sendJson(w, UserDatabaseToUser(user), http.StatusOK)
 }
 
+func (api *ApiConfig) polkaWebhooksHandler(w http.ResponseWriter, r *http.Request) {
+
+	apikey, err := auth.GetApiKey(r.Header)
+	if err != nil {
+		sendError(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	if apikey != api.polkaKey {
+		sendError(w, "invalid api key", http.StatusUnauthorized)
+		return
+	}
+
+	var input struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserId uuid.UUID `json:"user_id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		sendError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if input.Event == "" || input.Data.UserId == uuid.Nil {
+		sendError(w, "invalid input", http.StatusBadRequest)
+		return
+	}
+
+	switch input.Event {
+	case "user.upgraded":
+		_, err := api.db.UpdateUserIsChirpyRed(r.Context(), database.UpdateUserIsChirpyRedParams{
+			ID:          input.Data.UserId,
+			IsChirpyRed: true,
+		})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				sendError(w, "user not found", http.StatusNotFound)
+				return
+			}
+			sendError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		sendJson(w, nil, http.StatusOK)
+	default:
+		sendJson(w, nil, http.StatusOK)
+	}
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -450,11 +499,17 @@ func main() {
 		log.Fatal("JWT_SECRET environment variable is not set")
 	}
 
+	polkaKey := os.Getenv("POLKA_KEY")
+	if polkaKey == "" {
+		log.Fatal("POLKA_KEY environment variable is not set")
+	}
+
 	// mux is the router
 	api := &ApiConfig{
 		db:        database.New(db),
 		platform:  platform,
 		jwtSecret: jwtSecret,
+		polkaKey:  polkaKey,
 	}
 	mux := http.NewServeMux()
 	dir := http.Dir(".")
@@ -479,6 +534,8 @@ func main() {
 	mux.Handle("POST /api/login", api.middlewareMetricsInc(http.HandlerFunc(api.loginHandler)))
 	mux.Handle("POST /api/refresh", api.middlewareMetricsInc(http.HandlerFunc(api.refreshHandler)))
 	mux.Handle("POST /api/revoke", api.middlewareMetricsInc(http.HandlerFunc(api.revokeHandler)))
+	// webhooks
+	mux.HandleFunc("POST /api/polka/webhooks", api.polkaWebhooksHandler)
 
 	// admin namespace
 	mux.HandleFunc("GET /admin/metrics", api.metricHandler)

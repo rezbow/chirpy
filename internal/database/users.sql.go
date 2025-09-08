@@ -21,7 +21,7 @@ VALUES (
     $1,
     $2
 )
-RETURNING id, email, created_at, updated_at, password_hash
+RETURNING id, email, created_at, updated_at, password_hash, is_chirpy_red
 `
 
 type CreateUserParams struct {
@@ -38,6 +38,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PasswordHash,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
@@ -52,7 +53,7 @@ func (q *Queries) DeleteUsers(ctx context.Context) error {
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, created_at, updated_at, password_hash FROM users WHERE email = $1
+SELECT id, email, created_at, updated_at, password_hash, is_chirpy_red FROM users WHERE email = $1
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -64,6 +65,7 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PasswordHash,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
@@ -73,7 +75,7 @@ UPDATE users SET
     email = COALESCE($2, email),
     password_hash = COALESCE($3, password_hash)
 WHERE id = $1
-RETURNING id, email, created_at, updated_at, password_hash
+RETURNING id, email, created_at, updated_at, password_hash, is_chirpy_red
 `
 
 type UpdateUserParams struct {
@@ -91,6 +93,33 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PasswordHash,
+		&i.IsChirpyRed,
+	)
+	return i, err
+}
+
+const updateUserIsChirpyRed = `-- name: UpdateUserIsChirpyRed :one
+UPDATE users SET
+    is_chirpy_red =  $2
+WHERE id = $1
+RETURNING id, email, created_at, updated_at, password_hash, is_chirpy_red
+`
+
+type UpdateUserIsChirpyRedParams struct {
+	ID          uuid.UUID
+	IsChirpyRed bool
+}
+
+func (q *Queries) UpdateUserIsChirpyRed(ctx context.Context, arg UpdateUserIsChirpyRedParams) (User, error) {
+	row := q.db.QueryRowContext(ctx, updateUserIsChirpyRed, arg.ID, arg.IsChirpyRed)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PasswordHash,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
