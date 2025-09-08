@@ -11,6 +11,8 @@ SELECT * FROM chirps WHERE id = $1;
 
 -- name: GetChirps :many
 SELECT * FROM chirps
+WHERE
+    sqlc.narg('userId')::TEXT is NULL OR sqlc.narg('userId')::TEXT = user_id::TEXT
 ORDER BY created_at DESC
 LIMIT $1
 OFFSET $2;
@@ -19,4 +21,6 @@ OFFSET $2;
 DELETE FROM chirps WHERE id = $1 RETURNING id;
 
 -- name: TotalChirps :one
-SELECT COUNT(*) FROM chirps;
+SELECT COUNT(*) FROM chirps
+WHERE sqlc.narg('userId')::TEXT is NULL OR sqlc.narg('userId')::TEXT = user_id::TEXT
+;

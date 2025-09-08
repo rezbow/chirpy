@@ -182,6 +182,8 @@ func (api *ApiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
 	// TODO: Implement pagination
 	pageString := r.URL.Query().Get("page")
 	pageSizeString := r.URL.Query().Get("pageSize")
+	authorId := r.URL.Query().Get("authorId")
+
 	page, err := strconv.Atoi(pageString)
 	if err != nil {
 		page = 1
@@ -190,16 +192,23 @@ func (api *ApiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		pageSize = 10
 	}
+
+	var userId sql.NullString
+	if authorId != "" {
+		userId.Valid = true
+		userId.String = authorId
+	}
 	chirps, err := api.db.GetChirps(r.Context(), database.GetChirpsParams{
 		Limit:  int32(pageSize),
 		Offset: int32((page - 1) * pageSize),
+		UserId: userId,
 	})
 	if err != nil {
 		sendError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	totalChirps, err := api.db.TotalChirps(r.Context())
+	totalChirps, err := api.db.TotalChirps(r.Context(), userId)
 	if err != nil {
 		sendError(w, err.Error(), http.StatusInternalServerError)
 		return

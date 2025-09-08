@@ -7,6 +7,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/google/uuid"
 )
@@ -73,6 +74,8 @@ func (q *Queries) GetChirp(ctx context.Context, id uuid.UUID) (Chirp, error) {
 
 const getChirps = `-- name: GetChirps :many
 SELECT id, body, user_id, created_at, updated_at FROM chirps
+WHERE
+    $3::TEXT is NULL OR $3::TEXT = user_id::TEXT
 ORDER BY created_at DESC
 LIMIT $1
 OFFSET $2
@@ -81,10 +84,11 @@ OFFSET $2
 type GetChirpsParams struct {
 	Limit  int32
 	Offset int32
+	UserId sql.NullString
 }
 
 func (q *Queries) GetChirps(ctx context.Context, arg GetChirpsParams) ([]Chirp, error) {
-	rows, err := q.db.QueryContext(ctx, getChirps, arg.Limit, arg.Offset)
+	rows, err := q.db.QueryContext(ctx, getChirps, arg.Limit, arg.Offset, arg.UserId)
 	if err != nil {
 		return nil, err
 	}
@@ -114,10 +118,11 @@ func (q *Queries) GetChirps(ctx context.Context, arg GetChirpsParams) ([]Chirp, 
 
 const totalChirps = `-- name: TotalChirps :one
 SELECT COUNT(*) FROM chirps
+WHERE $1::TEXT is NULL OR $1::TEXT = user_id::TEXT
 `
 
-func (q *Queries) TotalChirps(ctx context.Context) (int64, error) {
-	row := q.db.QueryRowContext(ctx, totalChirps)
+func (q *Queries) TotalChirps(ctx context.Context, userid sql.NullString) (int64, error) {
+	row := q.db.QueryRowContext(ctx, totalChirps, userid)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
