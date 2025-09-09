@@ -215,19 +215,17 @@ func (api *ApiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var response struct {
-		Chirps   []Chirp `json:"chirps"`
-		Metadata struct {
-			Total      int `json:"total"`
-			Count      int `json:"count"`
-			Page       int `json:"page"`
-			TotalPages int `json:"total_pages"`
-		} `json:"metadata"`
+		Chirps     []Chirp `json:"chirps"`
+		Total      int     `json:"total"`
+		PageSize   int     `json:"page_size"`
+		Page       int     `json:"page"`
+		TotalPages int     `json:"total_pages"`
 	}
 	response.Chirps = ChirpsDatabaseToChirps(chirps)
-	response.Metadata.Count = len(chirps)
-	response.Metadata.Page = page
-	response.Metadata.Total = int(totalChirps)
-	response.Metadata.TotalPages = int(math.Ceil(float64(totalChirps) / float64(pageSize)))
+	response.PageSize = pageSize
+	response.Page = page
+	response.Total = int(totalChirps)
+	response.TotalPages = int(math.Ceil(float64(totalChirps) / float64(pageSize)))
 	sendJson(w, response, http.StatusOK)
 }
 
