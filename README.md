@@ -1,6 +1,21 @@
 # Introduction
 chirpy is a twitter-like rest api for sharing your thoughts and opinions with others.
 
+# Getting Started
+1. install [goose](https://github.com/pressly/goose)
+2. run `goose postgres $connection-url -dir ./sql/schema up`
+3. edit `.env` file to inlcude
+```
+DB_URL="db_url"
+PLATFORM="dev" or "prod"
+JWT_SECRET="random-string"
+POLKA_KEY="random-string"
+```
+you can generate random string using `openssl rand -base64 32`
+
+4. build the app using `go build .`
+5. run the server using `./chirpy`
+
 # Authentication
 chirpy uses JWT tokens for authentication. Users can register and login to create and share chirps. For creating a user
 send a POST request to `/api/users` endpoint with the following body:
